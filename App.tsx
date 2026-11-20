@@ -36,7 +36,8 @@ type RecordItem = { id: string; title: string; amount: string; note: string; cre
 const HISTORY_KEY = "synccalc.history.v1";
 const RECORDS_KEY = "synccalc.records.v1";
 const OUTBOX_KEY = "synccalc.outbox.v1";
-type SyncOperation = { id: string; collection: "calculations" | "records"; kind: "upsert" | "delete"; data?: Entry | RecordItem };
+type SyncOperation = { queueId: string; id: string; collection: "calculations" | "records"; kind: "upsert" | "delete"; data?: Entry | RecordItem };
+let activeOutboxFlush: Promise<void> | null = null;
 const historyKeyFor = (uid?: string) => uid ? `${HISTORY_KEY}.${uid}` : HISTORY_KEY;
 const recordsKeyFor = (uid?: string) => uid ? `${RECORDS_KEY}.${uid}` : RECORDS_KEY;
 
@@ -151,10 +152,10 @@ export default function App() {
           const pending: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(outboxKey)) || "[]");
           const known = new Set(pending.map(op => `${op.collection}:${op.id}`));
           for (const item of nextHistory) {
-            if (!known.has(`calculations:${item.id}`)) pending.push({ id: item.id, collection: "calculations", kind: "upsert", data: item });
+            if (!known.has(`calculations:${item.id}`)) pending.push({ queueId: `migration-calc-${item.id}`, id: item.id, collection: "calculations", kind: "upsert", data: item });
           }
           for (const item of nextRecords) {
-            if (!known.has(`records:${item.id}`)) pending.push({ id: item.id, collection: "records", kind: "upsert", data: item });
+            if (!known.has(`records:${item.id}`)) pending.push({ queueId: `migration-record-${item.id}`, id: item.id, collection: "records", kind: "upsert", data: item });
           }
           await AsyncStorage.setItem(outboxKey, JSON.stringify(pending));
           if (pending.length) setSyncStatus("pending");
@@ -172,35 +173,41 @@ export default function App() {
     return () => { active = false; };
   }, [user]);
 
-  async function enqueueSync(op: SyncOperation) {
+  async function enqueueSync(op: Omit<SyncOperation, "queueId">) {
     const key = user ? `${OUTBOX_KEY}.${user.uid}` : OUTBOX_KEY;
     const queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
-    queue.push(op);
+    queue.push({ ...op, queueId: `${Date.now()}-${Math.random().toString(36).slice(2)}` });
     await AsyncStorage.setItem(key, JSON.stringify(queue));
     setSyncStatus("pending");
   }
 
   async function flushOutbox(account: User) {
     if (!db) return;
-    const key = `${OUTBOX_KEY}.${account.uid}`;
-    if (!(await NetInfo.fetch()).isConnected) { setSyncStatus("offline"); return; }
-    let queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
-    if (!queue.length) { setSyncStatus("synced"); return; }
-    setSyncStatus("pending");
-    while (queue.length) {
-      const op = queue[0];
-      try {
-        const ref = doc(db, "users", account.uid, op.collection, op.id);
-        if (op.kind === "delete") await deleteDoc(ref);
-        else if (op.data) await setDoc(ref, op.data);
-        queue = queue.slice(1);
-        await AsyncStorage.setItem(key, JSON.stringify(queue));
-      } catch {
-        setSyncStatus("error");
-        return;
+    if (activeOutboxFlush) { await activeOutboxFlush; return; }
+    const run = (async () => {
+      const key = `${OUTBOX_KEY}.${account.uid}`;
+      if (!(await NetInfo.fetch()).isConnected) { setSyncStatus("offline"); return; }
+      let queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
+      if (!queue.length) { setSyncStatus("synced"); return; }
+      setSyncStatus("pending");
+      while (queue.length) {
+        const op = queue[0];
+        try {
+          const ref = doc(db, "users", account.uid, op.collection, op.id);
+          if (op.kind === "delete") await deleteDoc(ref);
+          else if (op.data) await setDoc(ref, op.data);
+          const latest: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
+          queue = latest.filter(item => item.queueId !== op.queueId);
+          await AsyncStorage.setItem(key, JSON.stringify(queue));
+        } catch {
+          setSyncStatus("error");
+          return;
+        }
       }
-    }
-    setSyncStatus("synced");
+      setSyncStatus("synced");
+    })();
+    activeOutboxFlush = run;
+    try { await run; } finally { activeOutboxFlush = null; }
   }
 
   useEffect(() => {
