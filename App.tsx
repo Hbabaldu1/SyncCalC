@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
+import { getAuth, getReactNativePersistence, GoogleAuthProvider, initializeAuth, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
 import { collection, doc, getFirestore, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -18,12 +18,21 @@ const firebaseConfig = {
 };
 const configured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId);
 const firebaseApp = configured ? (getApps()[0] ?? initializeApp(firebaseConfig)) : null;
-const auth = firebaseApp ? getAuth(firebaseApp) : null;
+const auth = firebaseApp ? (() => {
+  try {
+    return initializeAuth(firebaseApp, { persistence: getReactNativePersistence(AsyncStorage) });
+  } catch {
+    // Fast Refresh can evaluate this module more than once; reuse the initialized instance.
+    return getAuth(firebaseApp);
+  }
+})() : null;
 const db = firebaseApp ? getFirestore(firebaseApp) : null;
 type Entry = { id: string; expression: string; result: string; createdAt: number };
 type RecordItem = { id: string; title: string; amount: string; note: string; createdAt: number };
 const HISTORY_KEY = "synccalc.history.v1";
 const RECORDS_KEY = "synccalc.records.v1";
+const historyKeyFor = (uid?: string) => uid ? `${HISTORY_KEY}.${uid}` : HISTORY_KEY;
+const recordsKeyFor = (uid?: string) => uid ? `${RECORDS_KEY}.${uid}` : RECORDS_KEY;
 
 function evaluate(input: string): string {
   const source = input.replace(/×/g, "*").replace(/÷/g, "/").replace(/−/g, "-").replace(/,/g, "");
@@ -68,13 +77,52 @@ export default function App() {
   });
 
   useEffect(() => {
-    AsyncStorage.multiGet([HISTORY_KEY, RECORDS_KEY]).then(([h, r]) => {
-      if (h[1]) setHistory(JSON.parse(h[1]));
-      if (r[1]) setRecords(JSON.parse(r[1]));
-    }).catch(() => Alert.alert("Storage", "Could not load saved data."));
     if (!auth) return;
     return onAuthStateChanged(auth, setUser);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    async function loadAccountData() {
+      try {
+        const hKey = historyKeyFor(user?.uid);
+        const rKey = recordsKeyFor(user?.uid);
+        const [h, r] = await AsyncStorage.multiGet([hKey, rKey]);
+        let nextHistory: Entry[] = h[1] ? JSON.parse(h[1]) : [];
+        let nextRecords: RecordItem[] = r[1] ? JSON.parse(r[1]) : [];
+
+        // On the first Google sign-in, move anonymous device records into this account.
+        if (user) {
+          if (!h[1]) {
+            const legacy = await AsyncStorage.getItem(HISTORY_KEY);
+            if (legacy) nextHistory = JSON.parse(legacy);
+          }
+          if (!r[1]) {
+            const legacy = await AsyncStorage.getItem(RECORDS_KEY);
+            if (legacy) nextRecords = JSON.parse(legacy);
+          }
+          await AsyncStorage.multiSet([
+            [hKey, JSON.stringify(nextHistory)],
+            [rKey, JSON.stringify(nextRecords)]
+          ]);
+          if (db) {
+            await Promise.all([
+              ...nextHistory.map(item => setDoc(doc(db, "users", user.uid, "calculations", item.id), item)),
+              ...nextRecords.map(item => setDoc(doc(db, "users", user.uid, "records", item.id), item))
+            ]);
+          }
+        }
+        if (active) {
+          setHistory(nextHistory);
+          setRecords(nextRecords);
+        }
+      } catch (error) {
+        if (active) Alert.alert("Storage", "Could not load or sync saved data. Please try again.");
+      }
+    }
+    void loadAccountData();
+    return () => { active = false; };
+  }, [user]);
 
   useEffect(() => {
     if (response?.type !== "success" || !response.params.id_token || !auth) return;
@@ -101,17 +149,20 @@ export default function App() {
   }, [expression]);
 
   async function persistHistory(items: Entry[]) {
-    setHistory(items); await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+    setHistory(items); await AsyncStorage.setItem(historyKeyFor(user?.uid), JSON.stringify(items));
   }
   async function persistRecords(items: RecordItem[]) {
-    setRecords(items); await AsyncStorage.setItem(RECORDS_KEY, JSON.stringify(items));
+    setRecords(items); await AsyncStorage.setItem(recordsKeyFor(user?.uid), JSON.stringify(items));
   }
   async function saveCalculation() {
     if (!result) return;
     const entry: Entry = { id: String(Date.now()), expression, result, createdAt: Date.now() };
     const next = [entry, ...history].slice(0, 500);
     await persistHistory(next);
-    if (user && db) setDoc(doc(db, "users", user.uid, "calculations", entry.id), entry).catch(() => {});
+    if (user && db) {
+      try { await setDoc(doc(db, "users", user.uid, "calculations", entry.id), entry); }
+      catch { Alert.alert("Saved on this device", "Cloud sync failed. Your calculation is safe locally and will be available in your history."); }
+    }
     setExpression(result);
   }
   function press(key: string) {
@@ -126,7 +177,10 @@ export default function App() {
     if (!recordTitle.trim() || !recordAmount.trim()) { Alert.alert("Missing details", "Add a title and amount."); return; }
     const item: RecordItem = { id: String(Date.now()), title: recordTitle.trim(), amount: recordAmount.trim(), note: recordNote.trim(), createdAt: Date.now() };
     const next = [item, ...records]; await persistRecords(next);
-    if (user && db) setDoc(doc(db, "users", user.uid, "records", item.id), item).catch(() => {});
+    if (user && db) {
+      try { await setDoc(doc(db, "users", user.uid, "records", item.id), item); }
+      catch { Alert.alert("Saved on this device", "Cloud sync failed. Your record is safe locally; check your connection and try again."); }
+    }
     setRecordTitle(""); setRecordAmount(""); setRecordNote(""); setRecordOpen(false);
   }
   async function restore(entry: Entry) { setExpression(entry.expression); setTab("calc"); }
