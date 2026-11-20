@@ -144,12 +144,18 @@ export default function App() {
             [hKey, JSON.stringify(nextHistory)],
             [rKey, JSON.stringify(nextRecords)]
           ]);
-          if (db) {
-            await Promise.all([
-              ...nextHistory.map(item => setDoc(doc(db, "users", user.uid, "calculations", item.id), item)),
-              ...nextRecords.map(item => setDoc(doc(db, "users", user.uid, "records", item.id), item))
-            ]);
+          // Queue the first-account migration just like normal writes. A temporary
+          // network/auth failure must never discard data copied from anonymous storage.
+          const outboxKey = `${OUTBOX_KEY}.${user.uid}`;
+          const pending: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(outboxKey)) || "[]");
+          const known = new Set(pending.map(op => `${op.collection}:${op.id}`));
+          for (const item of nextHistory) {
+            if (!known.has(`calculations:${item.id}`)) pending.push({ id: item.id, collection: "calculations", kind: "upsert", data: item });
           }
+          for (const item of nextRecords) {
+            if (!known.has(`records:${item.id}`)) pending.push({ id: item.id, collection: "records", kind: "upsert", data: item });
+          }
+          await AsyncStorage.setItem(outboxKey, JSON.stringify(pending));
         }
         if (active) {
           setHistory(current => mergeById(current, nextHistory));
