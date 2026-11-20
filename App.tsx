@@ -52,8 +52,27 @@ function evaluate(input: string): string {
     if (!Number.isFinite(n)) throw Error("Invalid number");
     return n;
   };
-  const power = (): number => { let v = number(); ws(); if (source[i] === "^") { i++; v = Math.pow(v, power()); } return v; };
-  const term = (): number => { let v = power(); while (true) { ws(); const op = source[i]; if (op !== "*" && op !== "/" && op !== "%") break; i++; const r = power(); if ((op === "/" || op === "%") && r === 0) throw Error("Cannot divide by zero"); v = op === "*" ? v * r : op === "/" ? v / r : v % r; } return v; };
+  const power = (): number => {
+    let v = number();
+    ws();
+    if (source[i] === "^") { i++; v = Math.pow(v, power()); }
+    ws();
+    while (source[i] === "%") { i++; v /= 100; ws(); }
+    return v;
+  };
+  const term = (): number => {
+    let v = power();
+    while (true) {
+      ws();
+      const op = source[i];
+      if (op !== "*" && op !== "/") break;
+      i++;
+      const r = power();
+      if (op === "/" && r === 0) throw Error("Cannot divide by zero");
+      v = op === "*" ? v * r : v / r;
+    }
+    return v;
+  };
   const expr = (): number => { let v = term(); while (true) { ws(); const op = source[i]; if (op !== "+" && op !== "-") break; i++; const r = term(); v = op === "+" ? v + r : v - r; } return v; };
   const result = expr(); ws();
   if (i !== source.length) throw Error("Check the expression");
