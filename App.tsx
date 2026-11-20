@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { AppState } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import { Alert, FlatList, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
@@ -8,7 +10,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getAuth, GoogleAuthProvider, initializeAuth, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
 // @ts-expect-error Firebase 12.x includes this React Native runtime export, but its public type declarations omit it.
 import { getReactNativePersistence } from "firebase/auth";
-import { collection, doc, getFirestore, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getFirestore, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -33,6 +35,8 @@ type Entry = { id: string; expression: string; result: string; createdAt: number
 type RecordItem = { id: string; title: string; amount: string; note: string; createdAt: number };
 const HISTORY_KEY = "synccalc.history.v1";
 const RECORDS_KEY = "synccalc.records.v1";
+const OUTBOX_KEY = "synccalc.outbox.v1";
+type SyncOperation = { id: string; collection: "calculations" | "records"; kind: "upsert" | "delete"; data?: Entry | RecordItem };
 const historyKeyFor = (uid?: string) => uid ? `${HISTORY_KEY}.${uid}` : HISTORY_KEY;
 const recordsKeyFor = (uid?: string) => uid ? `${RECORDS_KEY}.${uid}` : RECORDS_KEY;
 
@@ -91,6 +95,7 @@ export default function App() {
   const [recordAmount, setRecordAmount] = useState("");
   const [recordNote, setRecordNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"local" | "synced" | "pending" | "offline" | "error">("local");
   const googleClientIds = {
     webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
@@ -225,7 +230,7 @@ export default function App() {
     }
     setRecordTitle(""); setRecordAmount(""); setRecordNote(""); setRecordOpen(false);
   }
-  async function restore(entry: Entry) { setExpression(entry.expression); setTab("calc"); }
+  async function restore(entry: Entry) { setExpression(entry.expression); setTab("calc"); }\n  function removeCalculation(entry: Entry) {\n    Alert.alert("Delete calculation?", "This will remove it from your history and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=history.filter(x=>x.id!==entry.id); await persistHistory(next); if(user){ await enqueueSync({id:entry.id,collection:"calculations",kind:"delete"}); void flushOutbox(user); } }}]);\n  }\n  function removeRecord(item: RecordItem) {\n    Alert.alert("Delete record?", "This will remove it from your record book and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=records.filter(x=>x.id!==item.id); await persistRecords(next); if(user){ await enqueueSync({id:item.id,collection:"records",kind:"delete"}); void flushOutbox(user); } }}]);\n  }
   const keys = ["AC", "⌫", "%", "÷", "7", "8", "9", "×", "4", "5", "6", "−", "1", "2", "3", "+", "±", "0", ".", "="];
 
   return <View style={s.screen}>
@@ -245,13 +250,13 @@ export default function App() {
       <Text style={s.hint}>Tap = to calculate and save to your history.</Text>
     </View> : tab === "history" ? <View style={s.listPage}>
       <View style={s.sectionHead}><Text style={s.sectionTitle}>Calculation history</Text><Text style={s.muted}>{history.length} saved</Text></View>
-      <FlatList data={history} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="No calculations yet" detail="Your saved calculations will appear here." />} renderItem={({item}) => <Pressable style={s.item} onPress={() => void restore(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.expression}</Text><Text style={s.muted}>{new Date(item.createdAt).toLocaleString()}</Text></View><Text style={s.itemValue}>{item.result}</Text></Pressable>} />
+      <FlatList data={history} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="No calculations yet" detail="Your saved calculations will appear here." />} renderItem={({item}) => <Pressable style={s.item} onPress={() => void restore(item)} onLongPress={() => removeCalculation(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.expression}</Text><Text style={s.muted}>{new Date(item.createdAt).toLocaleString()} · Hold to delete</Text></View><Text style={s.itemValue}>{item.result}</Text></Pressable>} />
     </View> : <View style={s.listPage}>
       <View style={s.sectionHead}><View><Text style={s.sectionTitle}>Personal record book</Text><Text style={s.muted}>Keep track of amounts and notes</Text></View><Pressable style={s.addButton} onPress={() => setRecordOpen(true)}><Text style={s.addText}>+ Add</Text></Pressable></View>
-      <FlatList data={records} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="Your record book is empty" detail="Add expenses, income, or any amount you want to remember." />} renderItem={({item}) => <View style={s.item}><View style={{flex:1}}><Text style={s.itemMain}>{item.title}</Text>{!!item.note && <Text style={s.muted}>{item.note}</Text>}<Text style={s.muted}>{new Date(item.createdAt).toLocaleDateString()}</Text></View><Text style={s.itemValue}>{item.amount}</Text></View>} />
+      <FlatList data={records} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="Your record book is empty" detail="Add expenses, income, or any amount you want to remember." />} renderItem={({item}) => <Pressable style={s.item} onLongPress={() => removeRecord(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.title}</Text>{!!item.note && <Text style={s.muted}>{item.note}</Text>}<Text style={s.muted}>{new Date(item.createdAt).toLocaleDateString()} · Hold to delete</Text></View><Text style={s.itemValue}>{item.amount}</Text></Pressable>} />
     </View>}
     <Modal visible={recordOpen} transparent animationType="slide" onRequestClose={() => setRecordOpen(false)}><View style={s.modalShade}><View style={s.modal}><Text style={s.sectionTitle}>New record</Text><TextInput value={recordTitle} onChangeText={setRecordTitle} placeholder="Title (e.g. Groceries)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordAmount} onChangeText={setRecordAmount} placeholder="Amount (e.g. ₦25,000)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordNote} onChangeText={setRecordNote} placeholder="Note (optional)" placeholderTextColor="#8490a4" style={s.input}/><View style={s.modalActions}><Pressable onPress={() => setRecordOpen(false)}><Text style={s.muted}>Cancel</Text></Pressable><Pressable style={s.addButton} onPress={() => void saveRecord()}><Text style={s.addText}>Save record</Text></Pressable></View></View></View></Modal>
-    <Text style={s.footer}>{user ? "Signed in · Syncing your account" : "Local mode · Sign in to sync across devices"}</Text>
+    <Text style={s.footer}>{user ? `Signed in · ${syncStatus === "synced" ? "All changes synced" : syncStatus === "offline" ? "Offline · changes queued" : syncStatus === "error" ? "Sync issue · changes safely queued" : "Syncing changes"}` : "Local mode · Sign in to sync across devices"}</Text>
   </View>;
 }
 
