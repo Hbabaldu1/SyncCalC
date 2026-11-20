@@ -126,8 +126,8 @@ export default function App() {
           }
         }
         if (active) {
-          setHistory(nextHistory);
-          setRecords(nextRecords);
+          setHistory(current => mergeById(current, nextHistory));
+          setRecords(current => mergeById(current, nextRecords));
         }
       } catch (error) {
         if (active) Alert.alert("Storage", "Could not load or sync saved data. Please try again.");
@@ -147,11 +147,19 @@ export default function App() {
     if (!user || !db) return;
     const unsubHistory = onSnapshot(query(collection(db, "users", user.uid, "calculations"), orderBy("createdAt", "desc")), snap => {
       const cloud = snap.docs.map(d => d.data() as Entry);
-      setHistory(current => mergeById(current, cloud));
+      setHistory(current => {
+        const merged = mergeById(current, cloud);
+        void AsyncStorage.setItem(historyKeyFor(user.uid), JSON.stringify(merged));
+        return merged;
+      });
     });
     const unsubRecords = onSnapshot(query(collection(db, "users", user.uid, "records"), orderBy("createdAt", "desc")), snap => {
       const cloud = snap.docs.map(d => d.data() as RecordItem);
-      setRecords(current => mergeById(current, cloud));
+      setRecords(current => {
+        const merged = mergeById(current, cloud);
+        void AsyncStorage.setItem(recordsKeyFor(user.uid), JSON.stringify(merged));
+        return merged;
+      });
     });
     return () => { unsubHistory(); unsubRecords(); };
   }, [user]);
