@@ -231,20 +231,26 @@ export default function App() {
   useEffect(() => {
     if (!user || !db) return;
     const unsubHistory = onSnapshot(query(collection(db, "users", user.uid, "calculations"), orderBy("createdAt", "desc")), snap => {
-      const cloud = snap.docs.map(d => d.data() as Entry);
-      setHistory(current => {
-        const merged = mergeById(current, cloud);
-        void AsyncStorage.setItem(historyKeyFor(user.uid), JSON.stringify(merged));
-        return merged;
-      });
+      void (async () => {
+        const cloud = snap.docs.map(d => d.data() as Entry);
+        const queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(`${OUTBOX_KEY}.${user.uid}`)) || "[]");
+        const pending = queue.filter(op => op.collection === "calculations");
+        const merged = mergeById(cloud, pending.filter(op => op.kind === "upsert" && op.data).map(op => op.data as Entry))
+          .filter(item => !pending.some(op => op.kind === "delete" && op.id === item.id));
+        setHistory(merged);
+        await AsyncStorage.setItem(historyKeyFor(user.uid), JSON.stringify(merged));
+      })();
     });
     const unsubRecords = onSnapshot(query(collection(db, "users", user.uid, "records"), orderBy("createdAt", "desc")), snap => {
-      const cloud = snap.docs.map(d => d.data() as RecordItem);
-      setRecords(current => {
-        const merged = mergeById(current, cloud);
-        void AsyncStorage.setItem(recordsKeyFor(user.uid), JSON.stringify(merged));
-        return merged;
-      });
+      void (async () => {
+        const cloud = snap.docs.map(d => d.data() as RecordItem);
+        const queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(`${OUTBOX_KEY}.${user.uid}`)) || "[]");
+        const pending = queue.filter(op => op.collection === "records");
+        const merged = mergeById(cloud, pending.filter(op => op.kind === "upsert" && op.data).map(op => op.data as RecordItem))
+          .filter(item => !pending.some(op => op.kind === "delete" && op.id === item.id));
+        setRecords(merged);
+        await AsyncStorage.setItem(recordsKeyFor(user.uid), JSON.stringify(merged));
+      })();
     });
     return () => { unsubHistory(); unsubRecords(); };
   }, [user]);
