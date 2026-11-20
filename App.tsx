@@ -91,6 +91,7 @@ export default function App() {
   const [expression, setExpression] = useState("");
   const [tab, setTab] = useState<"calc" | "history" | "records">("calc");
   const [recordOpen, setRecordOpen] = useState(false);
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [recordTitle, setRecordTitle] = useState("");
   const [recordAmount, setRecordAmount] = useState("");
   const [recordNote, setRecordNote] = useState("");
@@ -156,6 +157,8 @@ export default function App() {
             if (!known.has(`records:${item.id}`)) pending.push({ id: item.id, collection: "records", kind: "upsert", data: item });
           }
           await AsyncStorage.setItem(outboxKey, JSON.stringify(pending));
+          if (pending.length) setSyncStatus("pending");
+          void flushOutbox(user);
         }
         if (active) {
           setHistory(current => mergeById(current, nextHistory));
@@ -228,15 +231,23 @@ export default function App() {
   }
   async function saveRecord() {
     if (!recordTitle.trim() || !recordAmount.trim()) { Alert.alert("Missing details", "Add a title and amount."); return; }
-    const item: RecordItem = { id: String(Date.now()), title: recordTitle.trim(), amount: recordAmount.trim(), note: recordNote.trim(), createdAt: Date.now() };
-    const next = [item, ...records]; await persistRecords(next);
+    const existing = editingRecordId ? records.find(x => x.id === editingRecordId) : undefined;
+    const item: RecordItem = { id: editingRecordId ?? `record-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, title: recordTitle.trim(), amount: recordAmount.trim(), note: recordNote.trim(), createdAt: existing?.createdAt ?? Date.now() };
+    const next = existing ? records.map(x => x.id === item.id ? item : x) : [item, ...records];
+    await persistRecords(next);
     if (user && db) {
-      try { await setDoc(doc(db, "users", user.uid, "records", item.id), item); }
-      catch { Alert.alert("Saved on this device", "Cloud sync failed. Your record is safe locally; check your connection and try again."); }
+      await enqueueSync({ id: item.id, collection: "records", kind: "upsert", data: item });
+      void flushOutbox(user);
     }
-    setRecordTitle(""); setRecordAmount(""); setRecordNote(""); setRecordOpen(false);
+    setRecordTitle(""); setRecordAmount(""); setRecordNote(""); setEditingRecordId(null); setRecordOpen(false);
   }
-  async function restore(entry: Entry) { setExpression(entry.expression); setTab("calc"); }\n  function removeCalculation(entry: Entry) {\n    Alert.alert("Delete calculation?", "This will remove it from your history and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=history.filter(x=>x.id!==entry.id); await persistHistory(next); if(user){ await enqueueSync({id:entry.id,collection:"calculations",kind:"delete"}); void flushOutbox(user); } }}]);\n  }\n  function removeRecord(item: RecordItem) {\n    Alert.alert("Delete record?", "This will remove it from your record book and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=records.filter(x=>x.id!==item.id); await persistRecords(next); if(user){ await enqueueSync({id:item.id,collection:"records",kind:"delete"}); void flushOutbox(user); } }}]);\n  }
+  async function restore(entry: Entry) { setExpression(entry.expression); setTab("calc"); }
+  function removeCalculation(entry: Entry) {
+    Alert.alert("Delete calculation?", "This will remove it from your history and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=history.filter(x=>x.id!==entry.id); await persistHistory(next); if(user){ await enqueueSync({id:entry.id,collection:"calculations",kind:"delete"}); void flushOutbox(user); } }}]);
+  }
+  function removeRecord(item: RecordItem) {
+    Alert.alert("Delete record?", "This will remove it from your record book and synced devices.", [{text:"Cancel",style:"cancel"},{text:"Delete",style:"destructive",onPress:async()=>{ const next=records.filter(x=>x.id!==item.id); await persistRecords(next); if(user){ await enqueueSync({id:item.id,collection:"records",kind:"delete"}); void flushOutbox(user); } }}]);
+  }
   const keys = ["AC", "⌫", "%", "÷", "7", "8", "9", "×", "4", "5", "6", "−", "1", "2", "3", "+", "±", "0", ".", "="];
 
   return <View style={s.screen}>
@@ -258,10 +269,10 @@ export default function App() {
       <View style={s.sectionHead}><Text style={s.sectionTitle}>Calculation history</Text><Text style={s.muted}>{history.length} saved</Text></View>
       <FlatList data={history} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="No calculations yet" detail="Your saved calculations will appear here." />} renderItem={({item}) => <Pressable style={s.item} onPress={() => void restore(item)} onLongPress={() => removeCalculation(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.expression}</Text><Text style={s.muted}>{new Date(item.createdAt).toLocaleString()} · Hold to delete</Text></View><Text style={s.itemValue}>{item.result}</Text></Pressable>} />
     </View> : <View style={s.listPage}>
-      <View style={s.sectionHead}><View><Text style={s.sectionTitle}>Personal record book</Text><Text style={s.muted}>Keep track of amounts and notes</Text></View><Pressable style={s.addButton} onPress={() => setRecordOpen(true)}><Text style={s.addText}>+ Add</Text></Pressable></View>
-      <FlatList data={records} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="Your record book is empty" detail="Add expenses, income, or any amount you want to remember." />} renderItem={({item}) => <Pressable style={s.item} onLongPress={() => removeRecord(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.title}</Text>{!!item.note && <Text style={s.muted}>{item.note}</Text>}<Text style={s.muted}>{new Date(item.createdAt).toLocaleDateString()} · Hold to delete</Text></View><Text style={s.itemValue}>{item.amount}</Text></Pressable>} />
+      <View style={s.sectionHead}><View><Text style={s.sectionTitle}>Personal record book</Text><Text style={s.muted}>Keep track of amounts and notes</Text></View><Pressable style={s.addButton} onPress={() => { setEditingRecordId(null); setRecordTitle(""); setRecordAmount(""); setRecordNote(""); setRecordOpen(true); }}><Text style={s.addText}>+ Add</Text></Pressable></View>
+      <FlatList data={records} keyExtractor={x => x.id} ListEmptyComponent={<Empty title="Your record book is empty" detail="Add expenses, income, or any amount you want to remember." />} renderItem={({item}) => <Pressable style={s.item} onPress={() => { setEditingRecordId(item.id); setRecordTitle(item.title); setRecordAmount(item.amount); setRecordNote(item.note); setRecordOpen(true); }} onLongPress={() => removeRecord(item)}><View style={{flex:1}}><Text style={s.itemMain}>{item.title}</Text>{!!item.note && <Text style={s.muted}>{item.note}</Text>}<Text style={s.muted}>{new Date(item.createdAt).toLocaleDateString()} · Tap to edit, hold to delete</Text></View><Text style={s.itemValue}>{item.amount}</Text></Pressable>} />
     </View>}
-    <Modal visible={recordOpen} transparent animationType="slide" onRequestClose={() => setRecordOpen(false)}><View style={s.modalShade}><View style={s.modal}><Text style={s.sectionTitle}>New record</Text><TextInput value={recordTitle} onChangeText={setRecordTitle} placeholder="Title (e.g. Groceries)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordAmount} onChangeText={setRecordAmount} placeholder="Amount (e.g. ₦25,000)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordNote} onChangeText={setRecordNote} placeholder="Note (optional)" placeholderTextColor="#8490a4" style={s.input}/><View style={s.modalActions}><Pressable onPress={() => setRecordOpen(false)}><Text style={s.muted}>Cancel</Text></Pressable><Pressable style={s.addButton} onPress={() => void saveRecord()}><Text style={s.addText}>Save record</Text></Pressable></View></View></View></Modal>
+    <Modal visible={recordOpen} transparent animationType="slide" onRequestClose={() => setRecordOpen(false)}><View style={s.modalShade}><View style={s.modal}><Text style={s.sectionTitle}>{editingRecordId ? "Edit record" : "New record"}</Text><TextInput value={recordTitle} onChangeText={setRecordTitle} placeholder="Title (e.g. Groceries)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordAmount} onChangeText={setRecordAmount} placeholder="Amount (e.g. ₦25,000)" placeholderTextColor="#8490a4" style={s.input}/><TextInput value={recordNote} onChangeText={setRecordNote} placeholder="Note (optional)" placeholderTextColor="#8490a4" style={s.input}/><View style={s.modalActions}><Pressable onPress={() => { setRecordOpen(false); setEditingRecordId(null); }}><Text style={s.muted}>Cancel</Text></Pressable><Pressable style={s.addButton} onPress={() => void saveRecord()}><Text style={s.addText}>{editingRecordId ? "Save changes" : "Save record"}</Text></Pressable></View></View></View></Modal>
     <Text style={s.footer}>{user ? `Signed in · ${syncStatus === "synced" ? "All changes synced" : syncStatus === "offline" ? "Offline · changes queued" : syncStatus === "error" ? "Sync issue · changes safely queued" : "Syncing changes"}` : "Local mode · Sign in to sync across devices"}</Text>
   </View>;
 }
