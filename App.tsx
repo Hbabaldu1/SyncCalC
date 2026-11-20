@@ -70,10 +70,21 @@ export default function App() {
   const [recordAmount, setRecordAmount] = useState("");
   const [recordNote, setRecordNote] = useState("");
   const [busy, setBusy] = useState(false);
-  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+  const googleClientIds = {
     webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+  };
+  const googleConfigured = Platform.OS === "android"
+    ? Boolean(googleClientIds.androidClientId)
+    : Platform.OS === "ios"
+      ? Boolean(googleClientIds.iosClientId)
+      : Boolean(googleClientIds.webClientId);
+  // Non-empty placeholders keep the hook valid while setup is incomplete.
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: googleClientIds.webClientId || "GOOGLE_WEB_CLIENT_ID_NOT_CONFIGURED",
+    androidClientId: googleClientIds.androidClientId || "GOOGLE_ANDROID_CLIENT_ID_NOT_CONFIGURED",
+    iosClientId: googleClientIds.iosClientId || "GOOGLE_IOS_CLIENT_ID_NOT_CONFIGURED",
   });
 
   useEffect(() => {
@@ -83,6 +94,8 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    setHistory([]);
+    setRecords([]);
     async function loadAccountData() {
       try {
         const hKey = historyKeyFor(user?.uid);
@@ -190,7 +203,7 @@ export default function App() {
     <StatusBar style="light" />
     <View style={s.header}>
       <View><Text style={s.brand}>SyncCalc</Text><Text style={s.sub}>Your calculations, always with you</Text></View>
-      <Pressable style={s.account} onPress={() => user ? Alert.alert("Signed in", user.email ?? "Google account", [{ text: "Cancel" }, { text: "Sign out", style: "destructive", onPress: () => auth && signOut(auth) }]) : configured ? promptAsync() : Alert.alert("Setup required", "Add Firebase and Google OAuth values to your .env file first.")}>
+      <Pressable style={s.account} onPress={() => user ? Alert.alert("Signed in", user.email ?? "Google account", [{ text: "Cancel" }, { text: "Sign out", style: "destructive", onPress: () => auth && signOut(auth) }]) : configured && googleConfigured ? (request ? promptAsync() : Alert.alert("Please wait", "Google sign-in is preparing.")) : Alert.alert("Setup required", "Add Firebase settings and the matching Google OAuth client ID to your .env file first.")}>
         <Text style={s.accountText}>{user ? "● " + (user.displayName?.split(" ")[0] ?? "Account") : "Continue with Google"}</Text>
       </Pressable>
     </View>
