@@ -7,8 +7,15 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "ios": { "supportsTablet": true, "bundleIdentifier": "com.hbabaldu.synccalc" },
-    "android": { "package": "com.hbabaldu.synccalc", "adaptiveIcon": { "backgroundColor": "#101827" } },
-    "plugins": ["expo-secure-store"]
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hbabaldu.synccalc"
+    },
+    "android": {
+      "package": "com.hbabaldu.synccalc",
+      "adaptiveIcon": {
+        "backgroundColor": "#101827"
+      }
+    }
   }
 }
