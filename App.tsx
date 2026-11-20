@@ -249,7 +249,7 @@ export default function App() {
         setHistory(merged);
         await AsyncStorage.setItem(historyKeyFor(user.uid), JSON.stringify(merged));
       })();
-    });
+    }, () => setSyncStatus("error"));
     const unsubRecords = onSnapshot(query(collection(db, "users", user.uid, "records"), orderBy("createdAt", "desc")), snap => {
       void (async () => {
         const cloud = snap.docs.map(d => d.data() as RecordItem);
@@ -260,7 +260,7 @@ export default function App() {
         setRecords(merged);
         await AsyncStorage.setItem(recordsKeyFor(user.uid), JSON.stringify(merged));
       })();
-    });
+    }, () => setSyncStatus("error"));
     return () => { unsubHistory(); unsubRecords(); };
   }, [user]);
 
