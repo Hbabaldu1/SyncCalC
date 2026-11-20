@@ -5,7 +5,9 @@ import { StatusBar } from "expo-status-bar";
 import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth, getReactNativePersistence, GoogleAuthProvider, initializeAuth, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, initializeAuth, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
+// @ts-expect-error Firebase 12.x includes this React Native runtime export, but its public type declarations omit it.
+import { getReactNativePersistence } from "firebase/auth";
 import { collection, doc, getFirestore, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
 
 WebBrowser.maybeCompleteAuthSession();
