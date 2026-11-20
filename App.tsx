@@ -131,16 +131,18 @@ export default function App() {
         const [h, r] = await AsyncStorage.multiGet([hKey, rKey]);
         let nextHistory: Entry[] = h[1] ? JSON.parse(h[1]) : [];
         let nextRecords: RecordItem[] = r[1] ? JSON.parse(r[1]) : [];
+        let legacyHistory: Entry[] = [];
+        let legacyRecords: RecordItem[] = [];
 
         // On the first Google sign-in, move anonymous device records into this account.
         if (user) {
           if (!h[1]) {
             const legacy = await AsyncStorage.getItem(HISTORY_KEY);
-            if (legacy) nextHistory = JSON.parse(legacy);
+            if (legacy) { nextHistory = JSON.parse(legacy); legacyHistory = nextHistory; }
           }
           if (!r[1]) {
             const legacy = await AsyncStorage.getItem(RECORDS_KEY);
-            if (legacy) nextRecords = JSON.parse(legacy);
+            if (legacy) { nextRecords = JSON.parse(legacy); legacyRecords = nextRecords; }
           }
           await AsyncStorage.multiSet([
             [hKey, JSON.stringify(nextHistory)],
@@ -151,10 +153,10 @@ export default function App() {
           const outboxKey = `${OUTBOX_KEY}.${user.uid}`;
           const pending: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(outboxKey)) || "[]");
           const known = new Set(pending.map(op => `${op.collection}:${op.id}`));
-          for (const item of nextHistory) {
+          for (const item of legacyHistory) {
             if (!known.has(`calculations:${item.id}`)) pending.push({ queueId: `migration-calc-${item.id}`, id: item.id, collection: "calculations", kind: "upsert", data: item });
           }
-          for (const item of nextRecords) {
+          for (const item of legacyRecords) {
             if (!known.has(`records:${item.id}`)) pending.push({ queueId: `migration-record-${item.id}`, id: item.id, collection: "records", kind: "upsert", data: item });
           }
           await AsyncStorage.setItem(outboxKey, JSON.stringify(pending));
