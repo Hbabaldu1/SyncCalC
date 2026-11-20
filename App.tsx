@@ -85,7 +85,7 @@ export default function App() {
     webClientId: googleClientIds.webClientId || "GOOGLE_WEB_CLIENT_ID_NOT_CONFIGURED",
     androidClientId: googleClientIds.androidClientId || "GOOGLE_ANDROID_CLIENT_ID_NOT_CONFIGURED",
     iosClientId: googleClientIds.iosClientId || "GOOGLE_IOS_CLIENT_ID_NOT_CONFIGURED",
-  });
+  }, { native: "com.hbabaldu.synccalc:/oauthredirect" });
 
   useEffect(() => {
     if (!auth) return;
