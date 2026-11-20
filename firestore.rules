@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedInAs(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    match /users/{userId}/calculations/{calculationId} {
+      allow read, delete: if signedInAs(userId);
+      allow create, update: if signedInAs(userId)
+        && request.resource.data.keys().hasAll(['id', 'expression', 'result', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['id', 'expression', 'result', 'createdAt'])
+        && request.resource.data.id == calculationId
+        && request.resource.data.expression is string
+        && request.resource.data.expression.size() > 0
+        && request.resource.data.expression.size() <= 500
+        && request.resource.data.result is string
+        && request.resource.data.result.size() <= 100
+        && request.resource.data.createdAt is int;
+    }
+
+    match /users/{userId}/records/{recordId} {
+      allow read, delete: if signedInAs(userId);
+      allow create, update: if signedInAs(userId)
+        && request.resource.data.keys().hasAll(['id', 'title', 'amount', 'note', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['id', 'title', 'amount', 'note', 'createdAt'])
+        && request.resource.data.id == recordId
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 120
+        && request.resource.data.amount is string
+        && request.resource.data.amount.size() > 0
+        && request.resource.data.amount.size() <= 60
+        && request.resource.data.note is string
+        && request.resource.data.note.size() <= 1000
+        && request.resource.data.createdAt is int;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
