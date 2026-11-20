@@ -172,6 +172,56 @@ export default function App() {
     return () => { active = false; };
   }, [user]);
 
+  async function enqueueSync(op: SyncOperation) {
+    const key = user ? `${OUTBOX_KEY}.${user.uid}` : OUTBOX_KEY;
+    const queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
+    queue.push(op);
+    await AsyncStorage.setItem(key, JSON.stringify(queue));
+    setSyncStatus("pending");
+  }
+
+  async function flushOutbox(account: User) {
+    if (!db) return;
+    const key = `${OUTBOX_KEY}.${account.uid}`;
+    if (!(await NetInfo.fetch()).isConnected) { setSyncStatus("offline"); return; }
+    let queue: SyncOperation[] = JSON.parse((await AsyncStorage.getItem(key)) || "[]");
+    if (!queue.length) { setSyncStatus("synced"); return; }
+    setSyncStatus("pending");
+    while (queue.length) {
+      const op = queue[0];
+      try {
+        const ref = doc(db, "users", account.uid, op.collection, op.id);
+        if (op.kind === "delete") await deleteDoc(ref);
+        else if (op.data) await setDoc(ref, op.data);
+        queue = queue.slice(1);
+        await AsyncStorage.setItem(key, JSON.stringify(queue));
+      } catch {
+        setSyncStatus("error");
+        return;
+      }
+    }
+    setSyncStatus("synced");
+  }
+
+  useEffect(() => {
+    if (!user || !db) { setSyncStatus("local"); return; }
+    let running = false;
+    const retry = async () => {
+      if (running) return;
+      running = true;
+      try { await flushOutbox(user); } finally { running = false; }
+    };
+    void retry();
+    const unsubscribe = NetInfo.addEventListener(state => {
+      if (state.isConnected) void retry();
+      else setSyncStatus("offline");
+    });
+    const appState = AppState.addEventListener("change", state => {
+      if (state === "active") void retry();
+    });
+    return () => { unsubscribe(); appState.remove(); };
+  }, [user]);
+
   useEffect(() => {
     if (response?.type !== "success" || !response.params.id_token || !auth) return;
     signInWithCredential(auth, GoogleAuthProvider.credential(response.params.id_token))
@@ -212,12 +262,12 @@ export default function App() {
   }
   async function saveCalculation() {
     if (!result) return;
-    const entry: Entry = { id: String(Date.now()), expression, result, createdAt: Date.now() };
+    const entry: Entry = { id: `calc-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, expression, result, createdAt: Date.now() };
     const next = [entry, ...history].slice(0, 500);
     await persistHistory(next);
     if (user && db) {
-      try { await setDoc(doc(db, "users", user.uid, "calculations", entry.id), entry); }
-      catch { Alert.alert("Saved on this device", "Cloud sync failed. Your calculation is safe locally and will be available in your history."); }
+      await enqueueSync({ id: entry.id, collection: "calculations", kind: "upsert", data: entry });
+      void flushOutbox(user);
     }
     setExpression(result);
   }
